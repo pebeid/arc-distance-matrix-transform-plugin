@@ -114,54 +114,59 @@ object DistanceMatrixTransformStage {
     val df = spark.table(stage.inputView)
     val schema = df.schema
     // Get origin field metadata and validate type
+    try {
 
-    logger.debug().message(s"${stage.originField} field index: ${schema.fieldIndex(stage.originField)}")
+      logger.debug().message(s"${stage.originField} field index: ${schema.fieldIndex(stage.originField)}")
 
-    val originFieldIndex = try {
-      schema.fieldIndex(stage.originField)
+      val originFieldIndex = try {
+        schema.fieldIndex(stage.originField)
+      } catch {
+        case e: Exception => throw new Exception(s"""'${stage.originField}' is missing. inputView has: [${df.schema.map(_.name).mkString(", ")}].""") with DetailException {
+          override val detail = stage.stageDetail
+        }
+      }
+      logger.debug().message(s"${stage.originField} data type: ${schema(originFieldIndex).dataType}")
+
+      schema(originFieldIndex).dataType match {
+        case theType if isNotStringType(theType) => throw new Exception(s"""'${stage.originField}' is not of a type String.""") with DetailException {
+          override val detail = stage.stageDetail
+        }
+      }
+      logger.debug().message(s"${stage.destinationField} field index: ${schema.fieldIndex(stage.destinationField)}")
+
+      // Get destination field metadata and validate type
+      val destinationFieldIndex = try {
+        schema.fieldIndex(stage.destinationField)
+      } catch {
+        case e: Exception => throw new Exception(s"""'${stage.destinationField}' is missing. inputView has: [${df.schema.map(_.name).mkString(", ")}].""") with DetailException {
+          override val detail = stage.stageDetail
+        }
+      }
+
+      logger.debug().message(s"${stage.destinationField} data type: ${schema(destinationFieldIndex).dataType}")
+
+      schema(destinationFieldIndex).dataType match {
+        case theType if isNotStringType(theType) => throw new Exception(s"""'${stage.destinationField}' is not of a type String.""") with DetailException {
+          override val detail = stage.stageDetail
+        }
+      }
+
+      setupHttpClient match {
+        case Success(httpClient) => {
+          val concatCols = udf((col1: String, col2: String) => s"${col1} - ${col2}")
+          //        df.withColumn(stage.distanceField, concatCols(df.col(stage.originField), df.col(stage.destinationField)));
+          val getDistanceByCarUdf = udf(getDistanceByCarFnGen(httpClient, stage.apiKey))
+          df.withColumn(stage.distanceField, getDistanceByCarUdf(df.col(stage.originField), df.col(stage.destinationField), lit(stage.region.toString)));
+        }
+        case Failure(exception) => throw new Exception(s""" Could not set up HTTP client """) with DetailException {
+          override val detail = stage.stageDetail
+        }
+      }
     } catch {
-      case e: Exception => throw new Exception(s"""'${stage.originField}' is missing. inputView has: [${df.schema.map(_.name).mkString(", ")}].""") with DetailException {
+      case e: Exception => throw new Exception(e) with DetailException {
         override val detail = stage.stageDetail
       }
     }
-    logger.debug().message(s"${stage.originField} data type: ${schema(originFieldIndex).dataType}")
-
-    schema(originFieldIndex).dataType match {
-      case theType if isNotStringType(theType) => throw new Exception(s"""'${stage.originField}' is not of a type String.""") with DetailException {
-        override val detail = stage.stageDetail
-      }
-    }
-    logger.debug().message(s"${stage.destinationField} field index: ${schema.fieldIndex(stage.destinationField)}")
-
-    // Get destination field metadata and validate type
-    val destinationFieldIndex = try {
-      schema.fieldIndex(stage.destinationField)
-    } catch {
-      case e: Exception => throw new Exception(s"""'${stage.destinationField}' is missing. inputView has: [${df.schema.map(_.name).mkString(", ")}].""") with DetailException {
-        override val detail = stage.stageDetail
-      }
-    }
-
-    logger.debug().message(s"${stage.destinationField} data type: ${schema(destinationFieldIndex).dataType}")
-
-    schema(destinationFieldIndex).dataType match {
-      case theType if isNotStringType(theType) => throw new Exception(s"""'${stage.destinationField}' is not of a type String.""") with DetailException {
-        override val detail = stage.stageDetail
-      }
-    }
-
-    setupHttpClient match {
-      case Success(httpClient) => {
-        val concatCols = udf((col1: String, col2:String ) => s"${col1} - ${col2}")
-//        df.withColumn(stage.distanceField, concatCols(df.col(stage.originField), df.col(stage.destinationField)));
-        val getDistanceByCarUdf = udf(getDistanceByCarFnGen(httpClient, stage.apiKey))
-        df.withColumn(stage.distanceField, getDistanceByCarUdf(df.col(stage.originField), df.col(stage.destinationField), lit(stage.region.toString)));
-      }
-      case Failure(exception) => throw new Exception(s""" Could not set up HTTP client """) with DetailException {
-        override val detail = stage.stageDetail
-      }
-    }
-
     Option(df)
   }
 
