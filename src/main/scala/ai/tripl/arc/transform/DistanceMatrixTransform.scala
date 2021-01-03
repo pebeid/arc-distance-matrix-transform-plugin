@@ -5,10 +5,12 @@ import ai.tripl.arc.config.ConfigReader.{getOptionalValue, getValue}
 import ai.tripl.arc.config.ConfigUtils.checkValidKeys
 import ai.tripl.arc.config.Error.{Errors, StageError, stringOrDefault}
 import ai.tripl.arc.plugins.PipelineStagePlugin
-import ai.tripl.arc.util.Utils
+import ai.tripl.arc.util.{DetailException, Utils}
 import ai.tripl.arc.util.log.logger.Logger
 import com.typesafe.config.Config
+import org.apache.spark.sql.functions.udf
 import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.apache.spark.sql.types.{DataType, StringType}
 
 class DistanceMatrixTransform extends PipelineStagePlugin with JupyterCompleter {
 
@@ -99,8 +101,45 @@ case class DistanceMatrixTransformStage(
 
 object DistanceMatrixTransformStage {
 
+  def isNotStringType(theType: DataType): Boolean = theType != StringType
+
   def execute(stage: DistanceMatrixTransformStage)(implicit spark: SparkSession, logger: Logger, arcContext: ARCContext): Option[DataFrame] = {
     val df = spark.table(stage.inputView)
+    val schema = df.schema
+    // Get origin field metadata and validate type
+    val originFieldIndex = try {
+      schema.fieldIndex(stage.originField)
+    } catch {
+      case e: Exception => throw new Exception(s"""'${stage.originField}' is missing. inputView has: [${df.schema.map(_.name).mkString(", ")}].""") with DetailException {
+        override val detail = stage.stageDetail
+      }
+    }
+
+    schema(originFieldIndex).dataType match {
+      case theType if isNotStringType(theType) => throw new Exception(s"""'${stage.originField}' is not aof type String.""") with DetailException {
+        override val detail = stage.stageDetail
+      }
+    }
+
+    // Get destination field metadata and validate type
+    val destinationFieldIndex = try {
+      schema.fieldIndex(stage.destinationField)
+    } catch {
+      case e: Exception => throw new Exception(s"""'${stage.destinationField}' is missing. inputView has: [${df.schema.map(_.name).mkString(", ")}].""") with DetailException {
+        override val detail = stage.stageDetail
+      }
+    }
+
+    schema(destinationFieldIndex).dataType match {
+      case theType if isNotStringType(theType) => throw new Exception(s"""'${stage.destinationField}' is not aof type String.""") with DetailException {
+        override val detail = stage.stageDetail
+      }
+    }
+
+    val concatCols = udf((col1: String, col2:String ) => s"${col1} - ${col2}")
+
+    df.withColumn(stage.distanceField, concatCols(df.col(stage.originField), df.col(stage.destinationField)));
+
     Option(df)
   }
 }
