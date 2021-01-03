@@ -5,7 +5,6 @@ import ai.tripl.arc.config.ConfigReader.{getOptionalValue, getValue}
 import ai.tripl.arc.config.ConfigUtils.checkValidKeys
 import ai.tripl.arc.config.Error.{Errors, StageError, stringOrDefault}
 import ai.tripl.arc.plugins.PipelineStagePlugin
-import ai.tripl.arc.transform.DistanceMatrixTransformStage.apiUrl
 import ai.tripl.arc.util.{DetailException, Utils}
 import ai.tripl.arc.util.log.logger.Logger
 import com.typesafe.config.Config
