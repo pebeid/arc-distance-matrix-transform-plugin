@@ -13,6 +13,7 @@ import org.apache.http.client.methods.HttpGet
 import org.apache.http.client.utils.URIBuilder
 import org.apache.http.impl.client.{HttpClients, LaxRedirectStrategy}
 import org.apache.http.impl.conn.PoolingHttpClientConnectionManager
+import org.apache.http.util.EntityUtils
 import org.apache.spark.sql.functions.{lit, udf}
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.types.{DataType, StringType}
@@ -229,7 +230,7 @@ object distanceCalculator extends Serializable {
         val response = client.execute(httpGet);
         response.getEntity match {
           case null => ""
-          case other => other.toString
+          case other => EntityUtils.toString(other)
         }
       }
 
