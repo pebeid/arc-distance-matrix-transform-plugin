@@ -131,6 +131,7 @@ object DistanceMatrixTransformStage {
         case theType if isNotStringType(theType) => throw new Exception(s"""'${stage.originField}' is not of a type String.""") with DetailException {
           override val detail = stage.stageDetail
         }
+        case StringType => "OK"
       }
       logger.debug().message(s"${stage.destinationField} field index: ${schema.fieldIndex(stage.destinationField)}")
 
@@ -149,6 +150,7 @@ object DistanceMatrixTransformStage {
         case theType if isNotStringType(theType) => throw new Exception(s"""'${stage.destinationField}' is not of a type String.""") with DetailException {
           override val detail = stage.stageDetail
         }
+        case StringType => "OK"
       }
 
       setupHttpClient match {
@@ -163,7 +165,7 @@ object DistanceMatrixTransformStage {
         }
       }
     } catch {
-      case e: Exception => throw new Exception(e) with DetailException {
+      case e: Exception => throw new Exception(s"${schema(schema.fieldIndex(stage.originField)).dataType}") with DetailException {
         override val detail = stage.stageDetail
       }
     }
