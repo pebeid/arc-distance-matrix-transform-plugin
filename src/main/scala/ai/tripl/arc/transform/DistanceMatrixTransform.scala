@@ -8,9 +8,16 @@ import ai.tripl.arc.plugins.PipelineStagePlugin
 import ai.tripl.arc.util.{DetailException, Utils}
 import ai.tripl.arc.util.log.logger.Logger
 import com.typesafe.config.Config
-import org.apache.spark.sql.functions.udf
+import org.apache.http.client.HttpClient
+import org.apache.http.client.methods.HttpGet
+import org.apache.http.client.utils.URIBuilder
+import org.apache.http.impl.client.{HttpClients, LaxRedirectStrategy}
+import org.apache.http.impl.conn.PoolingHttpClientConnectionManager
+import org.apache.spark.sql.functions.{lit, udf}
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.types.{DataType, StringType}
+
+import scala.util.{Failure, Success, Try}
 
 class DistanceMatrixTransform extends PipelineStagePlugin with JupyterCompleter {
 
@@ -136,10 +143,45 @@ object DistanceMatrixTransformStage {
       }
     }
 
-    val concatCols = udf((col1: String, col2:String ) => s"${col1} - ${col2}")
-
-    df.withColumn(stage.distanceField, concatCols(df.col(stage.originField), df.col(stage.destinationField)));
+    setupHttpClient match {
+      case Success(httpClient) => {
+        val concatCols = udf((col1: String, col2:String ) => s"${col1} - ${col2}")
+//        df.withColumn(stage.distanceField, concatCols(df.col(stage.originField), df.col(stage.destinationField)));
+        val getDistanceByCarUdf = udf(getDistanceByCarFnGen(httpClient, stage.apiKey))
+        df.withColumn(stage.distanceField, getDistanceByCarUdf(df.col(stage.originField), df.col(stage.destinationField), lit(stage.region.toString)));
+      }
+      case Failure(exception) => throw new Exception(s""" Could not set up HTTP client """) with DetailException {
+        override val detail = stage.stageDetail
+      }
+    }
 
     Option(df)
+  }
+
+  val apiUrl = "https://maps.googleapis.com/maps/api/distancematrix/json"
+
+  def getDistanceByCarFnGen(httpClient: HttpClient, key: String): (String, String, String) => String = {
+    (origin: String, destination: String, region: String) => {
+      val uriBuilder: URIBuilder = new URIBuilder(apiUrl)
+      uriBuilder.setParameter("origins", origin)
+      uriBuilder.setParameter("destinations", destination)
+      uriBuilder.setParameter("region", destination)
+      uriBuilder.setParameter("key", destination)
+      val httpGet = new HttpGet(uriBuilder.build())
+      val response = httpClient.execute(httpGet);
+      response.getEntity match {
+        case null => ""
+        case other => other.toString
+      }
+    }
+  }
+
+  def setupHttpClient: Try[HttpClient] = Try {
+    val poolingHttpClientConnectionManager = new PoolingHttpClientConnectionManager()
+    poolingHttpClientConnectionManager.setMaxTotal(50)
+    HttpClients.custom
+      .setConnectionManager(poolingHttpClientConnectionManager)
+      .setRedirectStrategy(new LaxRedirectStrategy)
+    .build
   }
 }
