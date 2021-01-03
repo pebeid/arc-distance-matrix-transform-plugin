@@ -114,6 +114,9 @@ object DistanceMatrixTransformStage {
     val df = spark.table(stage.inputView)
     val schema = df.schema
     // Get origin field metadata and validate type
+
+    logger.debug().message(s"${stage.originField} field index: ${schema.fieldIndex(stage.originField)}")
+
     val originFieldIndex = try {
       schema.fieldIndex(stage.originField)
     } catch {
@@ -121,12 +124,14 @@ object DistanceMatrixTransformStage {
         override val detail = stage.stageDetail
       }
     }
+    logger.debug().message(s"${stage.originField} data type: ${schema(originFieldIndex).dataType}")
 
     schema(originFieldIndex).dataType match {
-      case theType if isNotStringType(theType) => throw new Exception(s"""'${stage.originField}' is not aof type String.""") with DetailException {
+      case theType if isNotStringType(theType) => throw new Exception(s"""'${stage.originField}' is not of a type String.""") with DetailException {
         override val detail = stage.stageDetail
       }
     }
+    logger.debug().message(s"${stage.destinationField} field index: ${schema.fieldIndex(stage.destinationField)}")
 
     // Get destination field metadata and validate type
     val destinationFieldIndex = try {
@@ -137,8 +142,10 @@ object DistanceMatrixTransformStage {
       }
     }
 
+    logger.debug().message(s"${stage.destinationField} data type: ${schema(destinationFieldIndex).dataType}")
+
     schema(destinationFieldIndex).dataType match {
-      case theType if isNotStringType(theType) => throw new Exception(s"""'${stage.destinationField}' is not aof type String.""") with DetailException {
+      case theType if isNotStringType(theType) => throw new Exception(s"""'${stage.destinationField}' is not of a type String.""") with DetailException {
         override val detail = stage.stageDetail
       }
     }
