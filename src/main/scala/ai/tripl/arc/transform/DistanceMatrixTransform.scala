@@ -17,6 +17,7 @@ import org.apache.http.util.EntityUtils
 import org.apache.spark.sql.functions.{lit, udf}
 import org.apache.spark.sql.{DataFrame, SparkSession}
 import org.apache.spark.sql.types.{DataType, StringType}
+import org.apache.spark.sql.functions.col
 
 import scala.util.{Failure, Success, Try}
 
@@ -107,13 +108,21 @@ case class DistanceMatrixTransformStage(
   }
 }
 
+case class OriginDestinationHashed(origin: String, destination: String, _region: String, _hashOfOD: Int)
+
+case class HashedDistance(hash: Int, distance: String)
+
 object DistanceMatrixTransformStage {
 
   def isNotStringType(theType: DataType): Boolean = theType != StringType
 
   def execute(stage: DistanceMatrixTransformStage)(implicit spark: SparkSession, logger: Logger, arcContext: ARCContext): Option[DataFrame] = {
+
+    import spark.implicits._
+
     var df = spark.table(stage.inputView)
     val schema = df.schema
+    val originalCols = df.columns
     // Get origin field metadata and validate type
 
     logger.debug().message(s"${stage.originField} field index: ${schema.fieldIndex(stage.originField)}")
@@ -153,14 +162,34 @@ object DistanceMatrixTransformStage {
       case StringType => "OK"
     }
 
+    val hashOriginDestinationUDF = udf((origin: String, destination: String, region: String) => s"""${origin}:${destination}:${region}""".hashCode)
+
+    df = df.withColumn("_region", lit(stage.region.get))
+    df = df.withColumn("_hashOfOD", hashOriginDestinationUDF(df.col(stage.originField), df.col(stage.destinationField), lit(stage.region.get)))
+
+    val originDestinationHash = df.select(stage.originField, stage.destinationField, "_region", "_hashOfOD").as[OriginDestinationHashed]
+
     try {
-      val getDistanceByCarUdf = udf((origin: String, destination: String, region: String) => distanceCalculator.getDistanceByCar(origin, destination, region))
-      df = df.withColumn(stage.distanceField, getDistanceByCarUdf(df.col(stage.originField), df.col(stage.destinationField), lit(stage.region.toString)));
+      val originDestinationDistance = originDestinationHash.map(row => distanceCalculator.getDistanceByCar(row, stage.apiKey).get)
+        .toDF("_distanceHash", "_distance")
+
+      df = df.join(originDestinationDistance, df("_hashOfOD") === originDestinationDistance("_distanceHash"))
+        .select((originalCols :+ "_distance").map(col): _*)
+      df.withColumnRenamed("_distance", stage.distanceField)
     } catch {
       case e: Exception => throw new Exception(e) with DetailException {
         override val detail = stage.stageDetail
       }
     }
+
+//    try {
+//      val getDistanceByCarUdf = udf((origin: String, destination: String, region: String) => distanceCalculator.getDistanceByCar(origin, destination, region))
+//      df = df.withColumn(stage.distanceField, getDistanceByCarUdf(df.col(stage.originField), df.col(stage.destinationField), lit(stage.region.toString)));
+//    } catch {
+//      case e: Exception => throw new Exception(e) with DetailException {
+//        override val detail = stage.stageDetail
+//      }
+//    }
 
     Option(df)
 
@@ -206,6 +235,8 @@ object DistanceMatrixTransformStage {
     //    .build
     //  }
 }
+
+
 object distanceCalculator extends Serializable {
   lazy val apiUrl = "https://maps.googleapis.com/maps/api/distancematrix/json"
 
@@ -218,19 +249,19 @@ object distanceCalculator extends Serializable {
       .build
   }
 
-  def getDistanceByCar(origin: String, destination: String, region: String) : Try[String] = Try {
+  def getDistanceByCar(odRow: OriginDestinationHashed, key: String) : Try[HashedDistance] = Try {
     httpClient match {
       case Success(client) => {
         val uriBuilder: URIBuilder = new URIBuilder(apiUrl)
-        uriBuilder.setParameter("origins", origin)
-        uriBuilder.setParameter("destinations", destination)
-        uriBuilder.setParameter("region", destination)
-        uriBuilder.setParameter("key", destination)
+        uriBuilder.setParameter("origins", odRow.origin)
+        uriBuilder.setParameter("destinations", odRow.destination)
+        uriBuilder.setParameter("region", odRow._region)
+        uriBuilder.setParameter("key", key)
         val httpGet = new HttpGet(uriBuilder.build())
         val response = client.execute(httpGet);
         response.getEntity match {
-          case null => ""
-          case other => EntityUtils.toString(other)
+          case null => HashedDistance(odRow._hashOfOD, "")
+          case other => HashedDistance(odRow._hashOfOD, EntityUtils.toString(other))
         }
       }
 
