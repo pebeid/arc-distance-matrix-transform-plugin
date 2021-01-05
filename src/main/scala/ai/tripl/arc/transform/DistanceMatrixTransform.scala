@@ -159,10 +159,12 @@ object DistanceMatrixTransformStage {
       case StringType => "OK"
     }
 
-    val hashOriginDestinationUDF = udf((origin: String, destination: String, region: String) => s"""${origin}:${destination}:${region}""".hashCode)
+    val regionVal = if(stage.region.isDefined) stage.region.get else ""
 
-    df = df.withColumn("_region", lit("au"))
-    df = df.withColumn("_hashOfOD", hashOriginDestinationUDF(df.col(stage.originField), df.col(stage.destinationField), lit(stage.region)))
+    val hashOriginDestinationUDF = udf((origin: String, destination: String, region: String) => s"""${origin}:${destination}:${regionVal}""".hashCode)
+
+    df = df.withColumn("_region", lit(regionVal))
+    df = df.withColumn("_hashOfOD", hashOriginDestinationUDF(df.col(stage.originField), df.col(stage.destinationField), lit(regionVal)))
 
     try {
       val originDestinationHash = df.select(stage.originField, stage.destinationField, "_region", "_hashOfOD").as[OriginDestinationHashed]
@@ -185,7 +187,9 @@ object DistanceMatrixTransformStage {
               val uriBuilder: URIBuilder = new URIBuilder(apiUrl)
               uriBuilder.setParameter("origins", row.origin)
               uriBuilder.setParameter("destinations", row.destination)
-              uriBuilder.setParameter("region", row._region)
+              if(stage.region.isDefined) {
+                uriBuilder.setParameter("region", row._region)
+              }
               uriBuilder.setParameter("key", stage.apiKey)
               val httpGet = new HttpGet(uriBuilder.build())
               val response = client.execute(httpGet);
