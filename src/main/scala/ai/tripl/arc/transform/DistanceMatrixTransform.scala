@@ -5,8 +5,8 @@ import ai.tripl.arc.config.ConfigReader.{getOptionalValue, getValue}
 import ai.tripl.arc.config.ConfigUtils.checkValidKeys
 import ai.tripl.arc.config.Error.{Errors, StageError, stringOrDefault}
 import ai.tripl.arc.plugins.PipelineStagePlugin
-import ai.tripl.arc.util.{DetailException, Utils}
 import ai.tripl.arc.util.log.logger.Logger
+import ai.tripl.arc.util.{DetailException, Utils}
 import com.typesafe.config.Config
 import org.apache.http.client.HttpClient
 import org.apache.http.client.methods.HttpGet
@@ -14,10 +14,9 @@ import org.apache.http.client.utils.URIBuilder
 import org.apache.http.impl.client.{HttpClients, LaxRedirectStrategy}
 import org.apache.http.impl.conn.PoolingHttpClientConnectionManager
 import org.apache.http.util.EntityUtils
-import org.apache.spark.sql.functions.{lit, udf}
-import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.apache.spark.sql.functions.{col, lit, udf}
 import org.apache.spark.sql.types.{DataType, StringType}
-import org.apache.spark.sql.functions.col
+import org.apache.spark.sql.{DataFrame, SparkSession}
 
 import scala.util.{Failure, Success, Try}
 
@@ -110,8 +109,6 @@ case class DistanceMatrixTransformStage(
 
 case class OriginDestinationHashed(origin: String, destination: String, _region: String, _hashOfOD: Int)
 
-case class HashedDistance(hash: Int, distance: String)
-
 object DistanceMatrixTransformStage {
 
   def isNotStringType(theType: DataType): Boolean = theType != StringType
@@ -164,132 +161,68 @@ object DistanceMatrixTransformStage {
 
     val hashOriginDestinationUDF = udf((origin: String, destination: String, region: String) => s"""${origin}:${destination}:${region}""".hashCode)
 
-    df = df.withColumn("_region", lit(stage.region.get))
-    df = df.withColumn("_hashOfOD", hashOriginDestinationUDF(df.col(stage.originField), df.col(stage.destinationField), lit(stage.region.get)))
-
-    val originDestinationHash = df.select(stage.originField, stage.destinationField, "_region", "_hashOfOD").as[OriginDestinationHashed]
+    df = df.withColumn("_region", lit("au"))
+    df = df.withColumn("_hashOfOD", hashOriginDestinationUDF(df.col(stage.originField), df.col(stage.destinationField), lit(stage.region)))
 
     try {
-      val originDestinationDistance = originDestinationHash.map(row => distanceCalculator.getDistanceByCar(row, stage.apiKey).get)
-        .toDF("_distanceHash", "_distance")
+      val originDestinationHash = df.select(stage.originField, stage.destinationField, "_region", "_hashOfOD").as[OriginDestinationHashed]
+      val originDestinationDistance = originDestinationHash.mapPartitions(rowPartition => {
+        val apiUrl = "https://maps.googleapis.com/maps/api/distancematrix/json"
+        val httpClient: Try[HttpClient] = Try {
+          val poolingHttpClientConnectionManager = new PoolingHttpClientConnectionManager()
+          poolingHttpClientConnectionManager.setMaxTotal(50)
+          HttpClients.custom.setConnectionManager(poolingHttpClientConnectionManager)
+            .setRedirectStrategy(new LaxRedirectStrategy).build
+        }
+
+        import org.json4s._
+        import org.json4s.jackson.JsonMethods._
+        implicit val formats = DefaultFormats
+
+        rowPartition.map(row => {
+          httpClient match {
+            case Success(client) => {
+              val uriBuilder: URIBuilder = new URIBuilder(apiUrl)
+              uriBuilder.setParameter("origins", row.origin)
+              uriBuilder.setParameter("destinations", row.destination)
+              uriBuilder.setParameter("region", row._region)
+              uriBuilder.setParameter("key", stage.apiKey)
+              val httpGet = new HttpGet(uriBuilder.build())
+              val response = client.execute(httpGet);
+              response.getEntity match {
+                case null => (row._hashOfOD, "")
+                case other => {
+                  val jsonString = EntityUtils.toString(other)
+                  val json = parse(jsonString).asInstanceOf[JObject]
+                  val result = Try { (((json \ "rows")(0) \ "elements")(0) \ "distance" \ "value").extract[Int] }
+                  val distance: Option[Int] = result match {
+                    case Success(dist) => Option(dist)
+                    case Failure(_) => null
+                  }
+                  (row._hashOfOD, distance)
+                }
+              }
+            }
+
+            case Failure(exception) => throw new Exception(s""" Could not set up HTTP client """)
+          }
+
+        })
+      }).toDF("_distanceHash", "_distance")
 
       df = df.join(originDestinationDistance, df("_hashOfOD") === originDestinationDistance("_distanceHash"))
         .select((originalCols :+ "_distance").map(col): _*)
       df.withColumnRenamed("_distance", stage.distanceField)
+
     } catch {
       case e: Exception => throw new Exception(e) with DetailException {
         override val detail = stage.stageDetail
       }
     }
 
-//    try {
-//      val getDistanceByCarUdf = udf((origin: String, destination: String, region: String) => distanceCalculator.getDistanceByCar(origin, destination, region))
-//      df = df.withColumn(stage.distanceField, getDistanceByCarUdf(df.col(stage.originField), df.col(stage.destinationField), lit(stage.region.toString)));
-//    } catch {
-//      case e: Exception => throw new Exception(e) with DetailException {
-//        override val detail = stage.stageDetail
-//      }
-//    }
 
     Option(df)
 
-    //    setupHttpClient match {
-    //      case Success(httpClient) => {
-    //        val concatCols = udf((col1: String, col2: String) => s"${col1} - ${col2}")
-    //        //        df.withColumn(stage.distanceField, concatCols(df.col(stage.originField), df.col(stage.destinationField)));
-    //        val getDistanceByCarUdf = udf(getDistanceByCarFnGen(httpClient, stage.apiKey))
-    //        df = df.withColumn(stage.distanceField, getDistanceByCarUdf(df.col(stage.originField), df.col(stage.destinationField), lit(stage.region.toString)));
-    //      }
-    //      case Failure(exception) => throw new Exception(s""" Could not set up HTTP client """) with DetailException {
-    //        override val detail = stage.stageDetail
-    //      }
-    //    }
-    //
-    //    Option(df)
-    //  }
-    //
-    //  val apiUrl = "https://maps.googleapis.com/maps/api/distancematrix/json"
-    //
-    //  def getDistanceByCarFnGen(httpClient: HttpClient, key: String): (String, String, String) => String = {
-    //    (origin: String, destination: String, region: String) => {
-    //      val uriBuilder: URIBuilder = new URIBuilder(apiUrl)
-    //      uriBuilder.setParameter("origins", origin)
-    //      uriBuilder.setParameter("destinations", destination)
-    //      uriBuilder.setParameter("region", destination)
-    //      uriBuilder.setParameter("key", destination)
-    //      val httpGet = new HttpGet(uriBuilder.build())
-    //      val response = httpClient.execute(httpGet);
-    //      response.getEntity match {
-    //        case null => ""
-    //        case other => other.toString
-    //      }
-    //    }
-    //  }
-    //
-    //  def setupHttpClient: Try[HttpClient] = Try {
-    //    val poolingHttpClientConnectionManager = new PoolingHttpClientConnectionManager()
-    //    poolingHttpClientConnectionManager.setMaxTotal(50)
-    //    HttpClients.custom
-    //      .setConnectionManager(poolingHttpClientConnectionManager)
-    //      .setRedirectStrategy(new LaxRedirectStrategy)
-    //    .build
-    //  }
 }
 
-
-object distanceCalculator extends Serializable {
-  lazy val apiUrl = "https://maps.googleapis.com/maps/api/distancematrix/json"
-
-  lazy val httpClient: Try[HttpClient] = Try {
-    val poolingHttpClientConnectionManager = new PoolingHttpClientConnectionManager()
-    poolingHttpClientConnectionManager.setMaxTotal(50)
-    HttpClients.custom
-      .setConnectionManager(poolingHttpClientConnectionManager)
-      .setRedirectStrategy(new LaxRedirectStrategy)
-      .build
-  }
-
-  def getDistanceByCar(odRow: OriginDestinationHashed, key: String) : Try[HashedDistance] = Try {
-    httpClient match {
-      case Success(client) => {
-        val uriBuilder: URIBuilder = new URIBuilder(apiUrl)
-        uriBuilder.setParameter("origins", odRow.origin)
-        uriBuilder.setParameter("destinations", odRow.destination)
-        uriBuilder.setParameter("region", odRow._region)
-        uriBuilder.setParameter("key", key)
-        val httpGet = new HttpGet(uriBuilder.build())
-        val response = client.execute(httpGet);
-        response.getEntity match {
-          case null => HashedDistance(odRow._hashOfOD, "")
-          case other => HashedDistance(odRow._hashOfOD, EntityUtils.toString(other))
-        }
-      }
-
-      case Failure(exception) => throw new Exception(s""" Could not set up HTTP client """)
-    }
-  }
-}
-
-//object distanceCalculator extends Serializable {
-//  val apiUrl = "https://maps.googleapis.com/maps/api/distancematrix/json"
-//  lazy val poolingHttpClientConnectionManager = new PoolingHttpClientConnectionManager
-//  poolingHttpClientConnectionManager.setMaxTotal(50)
-//  lazy val httpClient = HttpClients.custom
-//    .setConnectionManager(poolingHttpClientConnectionManager)
-//    .setRedirectStrategy(new LaxRedirectStrategy)
-//    .build
-//
-//  def calculateDistance(origin: String, destination: String, region: String) = {
-//    val uriBuilder: URIBuilder = new URIBuilder(apiUrl)
-//    uriBuilder.setParameter("origins", origin)
-//    uriBuilder.setParameter("destinations", destination)
-//    uriBuilder.setParameter("region", destination)
-//    uriBuilder.setParameter("key", destination)
-//    val httpGet = new HttpGet(uriBuilder.build())
-//    val response = httpClient.execute(httpGet);
-//    response.getEntity match {
-//      case null => ""
-//      case other => other.toString
-//    }
-//  }
 }
