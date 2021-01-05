@@ -222,7 +222,7 @@ object DistanceMatrixTransformStage {
 
       df = df.join(originDestinationDistance, df("_hashOfOD") === originDestinationDistance("_distanceHash"))
         .select((originalCols :+ "_distance").map(col): _*)
-      df.withColumnRenamed("_distance", stage.distanceField)
+      df = df.withColumnRenamed("_distance", stage.distanceField)
 
     } catch {
       case e: Exception => throw new Exception(e) with DetailException {
