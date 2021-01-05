@@ -195,7 +195,7 @@ object DistanceMatrixTransformStage {
                   val jsonString = EntityUtils.toString(other)
                   val json = parse(jsonString).asInstanceOf[JObject]
                   val result = Try { (((json \ "rows")(0) \ "elements")(0) \ "distance" \ "value").extract[Int] }
-                  val distance: Option[Int] = result match {
+                  val distance = result match {
                     case Success(dist) => Option(dist)
                     case Failure(_) => null
                   }
@@ -220,6 +220,18 @@ object DistanceMatrixTransformStage {
       }
     }
 
+
+    if (arcContext.immutableViews) df.createTempView(stage.outputView) else df.createOrReplaceTempView(stage.outputView)
+
+    if (!df.isStreaming) {
+      stage.stageDetail.put("outputColumns", java.lang.Integer.valueOf(df.schema.length))
+      stage.stageDetail.put("numPartitions", java.lang.Integer.valueOf(df.rdd.partitions.length))
+
+      if (stage.persist) {
+        spark.catalog.cacheTable(stage.outputView, arcContext.storageLevel)
+        stage.stageDetail.put("records", java.lang.Long.valueOf(df.count))
+      }
+    }
 
     Option(df)
 
