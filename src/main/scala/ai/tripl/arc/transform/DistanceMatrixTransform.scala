@@ -14,9 +14,10 @@ import org.apache.http.client.utils.URIBuilder
 import org.apache.http.impl.client.{HttpClients, LaxRedirectStrategy}
 import org.apache.http.impl.conn.PoolingHttpClientConnectionManager
 import org.apache.http.util.EntityUtils
+import org.apache.spark.sql.catalyst.encoders.RowEncoder
 import org.apache.spark.sql.functions.{col, lit, udf}
-import org.apache.spark.sql.types.{DataType, StringType}
-import org.apache.spark.sql.{DataFrame, SparkSession}
+import org.apache.spark.sql.types.{DataType, IntegerType, StringType, StructField, StructType}
+import org.apache.spark.sql.{DataFrame, Encoder, Row, SparkSession}
 
 import scala.util.{Failure, Success, Try}
 
@@ -167,7 +168,12 @@ object DistanceMatrixTransformStage {
     df = df.withColumn("_hashOfOD", hashOriginDestinationUDF(df.col(stage.originField), df.col(stage.destinationField), lit(regionVal)))
 
     try {
-      val originDestinationHash = df.select(stage.originField, stage.destinationField, "_region", "_hashOfOD").as[OriginDestinationHashed]
+
+      val originDestinationHash = df.select(
+        col(stage.originField).as("origin"),
+        col(stage.destinationField).as("destination"),
+        col("_region"), col("_hashOfOD")).as[OriginDestinationHashed]
+
       val originDestinationDistance = originDestinationHash.mapPartitions(rowPartition => {
         val apiUrl = "https://maps.googleapis.com/maps/api/distancematrix/json"
         val httpClient: Try[HttpClient] = Try {
