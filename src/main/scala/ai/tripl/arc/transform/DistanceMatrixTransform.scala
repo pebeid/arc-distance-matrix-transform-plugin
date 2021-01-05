@@ -194,14 +194,14 @@ object DistanceMatrixTransformStage {
               val httpGet = new HttpGet(uriBuilder.build())
               val response = client.execute(httpGet);
               response.getEntity match {
-                case null => (row._hashOfOD, "")
+                case null => (row._hashOfOD, -1)
                 case other => {
                   val jsonString = EntityUtils.toString(other)
                   val json = parse(jsonString).asInstanceOf[JObject]
                   val result = Try { (((json \ "rows")(0) \ "elements")(0) \ "distance" \ "value").extract[Int] }
                   val distance = result match {
-                    case Success(dist) => Option(dist)
-                    case Failure(_) => null
+                    case Success(dist) => dist
+                    case Failure(_) => -1
                   }
                   (row._hashOfOD, distance)
                 }
